@@ -1,4 +1,5 @@
 package Bot::Applebot;
+use 5.008001;
 use Moose;
 use Moose::Util::TypeConstraints 'enum';
 use MooseX::AttributeHelpers;
@@ -15,7 +16,7 @@ use Bot::Applebot::Player;
 
 extends 'Bot::BasicBot';
 
-our $VERSION = '0.01';
+our $VERSION = '0.02';
 
 do {
     my $conf;
@@ -193,12 +194,26 @@ has adjective_card => (
     clearer => 'clear_adjective_card',
 );
 
+has streak_winner => (
+    is      => 'rw',
+    isa     => 'Str',
+    clearer => 'clear_streak_winner',
+);
+
+has streak_score => (
+    is      => 'rw',
+    isa     => 'Int',
+    default => 0,
+    clearer => 'reset_streak_score',
+);
+
 sub channel { (shift->channels)[0] }
 
 sub color {
     my ($string, $color) = @_;
+    Carp::cluck("Too many arguments") if @_ > 2;
     return $string if forbid("color");
-    return String::IRC->new($string)->$color;
+    return eval { String::IRC->new($string)->$color } || $string;
 }
 
 sub adj { color($_[0], 'light_green') }
@@ -449,7 +464,8 @@ sub tick {
                     }
                 }
                 else {
-                    my @waiting_on = $self->waiting_on;
+                    my @waiting_on = $self->waiting_on(sub { color($_, 'yellow') });
+                    my $waiting_on = $self->waiting_on(sub { color($_, 'yellow') });
                     my $singular = @waiting_on == 1;
 
                     my $an = lc AN($self->adjective_card);
@@ -462,7 +478,7 @@ sub tick {
                         . " card"
                         . ($singular ? "" : "s")
                         . " from: "
-                        . color($self->waiting_on, 'yellow'));
+                        . $waiting_on);
                 }
             }
         }
@@ -504,7 +520,7 @@ sub begin_round {
 
     $self->reset_wait_announce;
 
-    $self->announce("The judge is now " . $self->judge . "! Now hold on for a minute while I tell everyone their cards.");
+    $self->announce("The judge is now " . color($self->judge, 'yellow') . "! Now hold on for a minute while I tell everyone their cards.");
 
     for my $player ($self->players) {
         next if $self->is_judge($player);
@@ -582,6 +598,7 @@ sub judge_player {
 
 sub waiting_on {
     my $self = shift;
+    my $transform = shift;
 
     my @players;
 
@@ -594,8 +611,14 @@ sub waiting_on {
                    $self->players;
     }
 
-    return @players if wantarray;
-    return join ', ', map { $_->name } @players;
+    if (wantarray) {
+        @players = map { $transform->($_) } @players if $transform;
+        return @players;
+    }
+
+    @players = map { $_->name } @players;
+    @players = map { $transform->($_) } @players if $transform;
+    return join ', ', @players;
 }
 
 sub give_card {
@@ -637,7 +660,7 @@ sub begin_judging {
 
     $self->finalize_played_cards;
 
-    $self->announce("Everyone is done playing. $judge, it's time to judge some $adjective cards.");
+    $self->announce("Everyone is done playing. $judge, it's time to judge some ".adj($adjective)." cards.");
 
     my $i = 0;
     for ($self->played_cards) {
@@ -785,12 +808,24 @@ sub decide_winner {
 
     $card = $self->format_card($self->adjective_card, $card);
 
-    my $decree = sprintf q{%s has decreed the winner to be %s's "%s"!},
+    my $decree = sprintf q{%s has chosen %s's "%s"!},
         $self->judge,
         color($winner->name, 'red'),
         color($card, 'cyan');
 
     $self->announce($decree);
+
+    do {
+        no warnings 'uninitialized';
+        if ($self->streak_winner eq "$winner") {
+            $self->streak_score($self->streak_score + 1);
+            $self->announce("That's " . color($self->streak_score, "red") . " in a row for $winner!");
+        }
+        else {
+            $self->streak_score(1);
+            $self->streak_winner("$winner");
+        }
+    }
 
     $winner->add_adjective_card($self->adjective_card);
     if ($winner->score >= $self->end_score) {
